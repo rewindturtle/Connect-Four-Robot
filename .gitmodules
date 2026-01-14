@@ -1,0 +1,9 @@
+[submodule "code/cpp/extern/godot-cpp"]
+	path = code/cpp/extern/godot-cpp
+	url = https://github.com/godotengine/godot-cpp.git
+[submodule "code/cpp/extern/godot"]
+	path = code/cpp/extern/godot
+	url = https://github.com/godotengine/godot.git
+[submodule "code/cpp/extern/flatbuffers"]
+	path = code/cpp/extern/flatbuffers
+	url = https://github.com/google/flatbuffers.git
