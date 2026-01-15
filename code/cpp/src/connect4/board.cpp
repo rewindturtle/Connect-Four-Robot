@@ -147,11 +147,11 @@ static inline bool isWin(const uint64_t board) {
 }
 
 
-bool Board::redWins() const {
-    return isWin(_redBoard);
+bool Board::playerWins() const {
+    return isWin(_playerBoard);
 }
 
 
-bool Board::yellowWins() const {
-    return isWin(getYellowBoard());
+bool Board::opponentWins() const {
+    return isWin(getOpponentBoard());
 }
