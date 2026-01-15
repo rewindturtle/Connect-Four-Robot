@@ -27,21 +27,41 @@ namespace connect4 {
         };
 
         private:
-            BoardMap _memo;
+            // Game state
             Board _board;
-            uint8_t _globalMaxDepth = 8;
-            uint8_t _maxDepth = 4;
             uint8_t _currentTurn = 0;
+
+            // Difficulty parameters
+            uint32_t _maxThinkingTime = 5000;
+            uint8_t _globalMaxDepth = 8;
+            bool _allowIdleSearch = true;
+
+            // Player Info
+            std::atomic<uint32_t> _thinkingTimeMS{0};
+
+            // Search variables
+            BoardMap _memo;
+            uint8_t _maxDepth = 4;
+            
+            // Timer Thread
+            mutable std::condition_variable _timerCV;
+            std::thread _timerThread;
             utils::AtomicFlag _isTimeOut{false};
             utils::AtomicFlag _startTimer{false};
             utils::AtomicFlag _endTimer{false};
+
+            // Idle Search Thread
+            mutable std::condition_variable _idleSearchCV;
+            std::thread _idleSearchThread;
+            utils::AtomicFlag _pauseIdleSearch{false};
+            utils::AtomicFlag _idleSearchRunning{false};
+
+            // Thread control
             utils::AtomicFlag _endThreads{false};
-            mutable std::condition_variable _timerCV;
-            uint32_t _timeOutMS = 5000;
-            std::atomic<uint32_t> _thinkingTimeMS{0};
-            std::thread _timerThread;
+            
+            // Misc
             std::mt19937 _rng{std::random_device{}()};
-            bool _useMemoization = true;
+            
 
             inline uint32_t _updateThinkingTimeMS(std::chrono::steady_clock::time_point startTime) {
                 uint32_t thinkingTimeMS = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count());
@@ -54,15 +74,11 @@ namespace connect4 {
             }
 
             void _timerThreadFunc();
+            void _idleSearchThreadFunc();
 
             SearchResult _negamaxPlayer(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardSet& visited);
             SearchResult _negamaxOpponent(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardSet& visited);
-            int8_t _negamaxPlayerNoMemo(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardMap& visited);
-            int8_t _negamaxOpponentNoMemo(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardMap& visited);
-            
             void _getScores(ScoreArray& scores);
-            void _search(ScoreArray& scores);
-            void _searchNoMemo(ScoreArray& scores);
         public:
             Player();
             ~Player();
@@ -75,7 +91,6 @@ namespace connect4 {
 
             void reset(bool hardReset = false);
             uint8_t chooseMove();
-
             void applyPlayerMove();
             void applyOpponentMove(uint8_t col);
     };

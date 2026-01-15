@@ -5,15 +5,17 @@
 using namespace connect4;
 
 
-Player::Player() : _board() {
-    _timerThread = std::thread(&Player::_timerThreadFunc, this);
-}
+Player::Player() : _board() {}
 
 
 Player::~Player() {
     _endThreads = true;
+
     _timerCV.notify_one();
+    _idleSearchCV.notify_one();
+    
     if (_timerThread.joinable()) _timerThread.join();
+    if (_idleSearchThread.joinable()) _idleSearchThread.join();
 }
 
 
@@ -158,114 +160,6 @@ Player::SearchResult Player::_negamaxOpponent(const Board& board, uint8_t depth,
 }
 
 
-int8_t Player::_negamaxPlayerNoMemo(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardMap& visited) {
-    if (_isTimeOut) {
-        // Searched time exceeded, return neutral score
-        return 0;
-    }
-
-    auto it = visited.find(board);
-    if (it != visited.end()) {
-        return it->second;
-    }
-
-    if (board.opponentWins()) {
-        int8_t score = _getScore(depth);
-        visited[board] = score;
-        return score;
-    }
-    
-    if (depth == _maxDepth || board.isDraw()) {
-        visited[board] = 0;
-        return 0;
-    } 
-
-    int8_t result = MIN_SCORE;
-    for (uint8_t col = 0; col < 7; ++col) {
-        if (board.isColumnFull(col)) {
-            continue;
-        }
-
-        Board newBoard = board;
-        newBoard.placePlayer(col);
-
-        int8_t candidate = -_negamaxOpponentNoMemo(newBoard, depth + 1, -beta, -alpha, visited);
-
-        if (_isTimeOut) {
-            return 0;
-        }
-
-        if (candidate > result) {
-            result = candidate;
-
-            if (alpha > result) {
-                alpha = result;
-                if (alpha >= beta) {
-                    break;
-                }
-            }
-        }
-    }
-
-    visited[board] = result;
-    return result;
-}
-
-
-int8_t Player::_negamaxOpponentNoMemo(const Board& board, uint8_t depth, int8_t alpha, int8_t beta, BoardMap& visited) {
-    if (_isTimeOut) {
-        // Searched time exceeded, return neutral score
-        return 0;
-    }
-
-    auto it = visited.find(board);
-    if (it != visited.end()) {
-        return it->second;
-    }
-
-    if (board.playerWins()) {
-        int8_t score = _getScore(depth);
-        visited[board] = score;
-        return score;
-    }
-    
-    if (depth == _maxDepth || board.isDraw()) {
-        visited[board] = 0;
-        return 0;
-    } 
-
-    int8_t result = MIN_SCORE;
-    for (uint8_t col = 0; col < 7; ++col) {
-        if (board.isColumnFull(col)) {
-            continue;
-        }
-
-        Board newBoard = board;
-        newBoard.placeOpponent(col);
-
-        int8_t candidate = -_negamaxPlayerNoMemo(newBoard, depth + 1, -beta, -alpha, visited);
-
-        if (_isTimeOut) {
-            return 0;
-        }
-
-        if (candidate > result) {
-            result = candidate;
-
-            if (alpha > result) {
-                alpha = result;
-                if (alpha >= beta) {
-                    break;
-                }
-            }
-        }
-    }
-
-    visited[board] = result;
-    return result;
-}
-
-
 // Runs a timer thread in the background that sets the timeout flag after _timeOutMS milliseconds
 void Player::_timerThreadFunc() {
     std::mutex timerMutex;
@@ -288,7 +182,7 @@ void Player::_timerThreadFunc() {
             }
 
             uint32_t thinkingTime = _updateThinkingTimeMS(startTime);
-            if (thinkingTime >= _timeOutMS) {
+            if (thinkingTime >= _maxThinkingTime) {
                 _isTimeOut = true;
                 break;
             }
@@ -299,19 +193,72 @@ void Player::_timerThreadFunc() {
 }
 
 
+void Player::_idleSearchThreadFunc() {
+    std::mutex idleSearchMutex;
+    std::unique_lock<std::mutex> lock(idleSearchMutex);
+    while (true) {
+        _idleSearchRunning = false;
+        _idleSearchCV.wait(lock, [this]() {return !_pauseIdleSearch || _endThreads;});
+        
+        if (_endThreads) return;
+
+        _idleSearchRunning = true;
+        _pauseIdleSearch = false;
+
+        _maxDepth = 4;
+        while (!_pauseIdleSearch) {
+            BoardSet visited;
+
+            uint8_t numExact = 0;
+            for (uint8_t col = 0; col < 7; ++col) {
+                if (_endThreads) return;
+                if (_pauseIdleSearch) break;
+
+                if (_board.isColumnFull(col)) {
+                    numExact++;
+                    continue;
+                }
+
+                Board newBoard = _board;
+                newBoard.placePlayer(col);
+
+                auto it = _memo.find(newBoard);
+                if (it != _memo.end()) {
+                    numExact++;
+                    continue;
+                }
+
+                SearchResult result = _negamaxOpponent(newBoard, 1, MIN_SCORE, MAX_SCORE, visited);
+                if (result.exact) {
+                    _memo[newBoard] = -result.score;
+                    numExact++;
+                }
+            }
+
+            // If all seven columns have exact scores, there is no need to continue searching deeper
+            if (numExact == 7) {
+                _pauseIdleSearch = true;
+                break;
+            }
+
+            _maxDepth++;
+        }
+    }
+}
+
+
 void Player::_getScores(ScoreArray& scores) {
     _maxDepth = 4;
     scores.fill(MIN_SCORE);
+    if (!_allowIdleSearch) {
+        _memo.clear();
+    }
 
     _startTimer = true;
     _isTimeOut = false;
     _timerCV.notify_one();
 
     
-}
-
-
-void Player::_search(ScoreArray& scores) {
     while (!_isTimeOut) {
         BoardSet visited;
 
@@ -325,35 +272,12 @@ void Player::_search(ScoreArray& scores) {
             newBoard.placePlayer(col);
 
             SearchResult result = _negamaxOpponent(newBoard, 1, MIN_SCORE, MAX_SCORE, visited);
-            if (_isTimeOut) return;
-            scores[col] = -result.score;
-        }
-
-        _maxDepth++;
-        if (_maxDepth > _globalMaxDepth) {
-            _endTimer = true;
-            return;
-        }
-    }
-}
-
-
-void Player::_searchNoMemo(ScoreArray& scores) {
-    while (!_isTimeOut) {
-        BoardMap visited;
-
-        for (uint8_t col = 0; col < 7; ++col) {
-            if (_board.isColumnFull(col)) {
-                scores[col] = MIN_SCORE;
-                continue;
+            if (result.exact) {
+                _memo[newBoard] = -result.score;
             }
 
-            Board newBoard = _board;
-            newBoard.placePlayer(col);
-
-            int8_t score = -_negamaxOpponentNoMemo(newBoard, 1, MIN_SCORE, MAX_SCORE, visited);
             if (_isTimeOut) return;
-            scores[col] = score;
+            scores[col] = -result.score;
         }
 
         _maxDepth++;
